@@ -22,7 +22,7 @@ from Foundation import (
 )
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "n1.json")
+DATA = os.path.join(BASE, "words.json")
 CONF = os.path.join(BASE, "config.json")
 STATE = os.path.join(BASE, "state.json")
 
@@ -32,7 +32,8 @@ GRADUATE = 10
 WIDTH = 300
 PAD = 20
 BTN_W, BTN_H, GAP = 84, 26, 10
-FREQ_W = {"高频": 3.0, "中频": 2.0, "低频": 1.0}   # 频度权重
+FREQ_W = {"高频": 3.0, "中频": 2.0, "低频": 1.0}   # 频度权重(每轮出现次数)
+LEVEL_W = {"N1": 2.0, "N2": 1.0}                  # 级别权重(N1:N2 ≈ 2:1)
 
 def jload(p, d):
     try:
@@ -52,12 +53,15 @@ class Roller:
         self.graduated = 0; self.known = set()
         self._load()
 
-    def _w(self, idx):
+    def _freq_w(self, idx):
         return FREQ_W.get(self.words[idx].get("freq", ""), 1.0)
+
+    def _intro_w(self, idx):   # 引入权重 = 级别 × 频度
+        return LEVEL_W.get(self.words[idx].get("level", "N1"), 1.0) * self._freq_w(idx)
 
     def _build_master(self):
         # 加权随机排序(Efraimidis–Spirakis)：权重大→倾向靠前→更早被引入
-        keyed = [(random.random() ** (1.0 / self._w(i)), i) for i in range(len(self.words))]
+        keyed = [(random.random() ** (1.0 / self._intro_w(i)), i) for i in range(len(self.words))]
         keyed.sort(reverse=True)
         return [i for _, i in keyed]
 
@@ -104,7 +108,7 @@ class Roller:
         # 每轮里高频词出现 3 次、中频 2 次、低频 1 次
         order = []
         for slot, e in enumerate(self.window):
-            order += [slot] * int(self._w(e["idx"]))
+            order += [slot] * int(self._freq_w(e["idx"]))
         random.shuffle(order)
         self.pass_order = order; self.pass_pos = 0
 
@@ -222,10 +226,13 @@ class Controller(NSObject):
             return NSAttributedString.alloc().initWithString_attributes_(
                 t, {NSFontAttributeName: f, NSForegroundColorAttributeName: color,
                     NSParagraphStyleAttributeName: para})
-        white = NSColor.whiteColor()
-        blue = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.45, 0.88, 1.0, 1)
-        light = NSColor.colorWithCalibratedWhite_alpha_(0.96, 1)
-        foot = NSColor.colorWithCalibratedWhite_alpha_(0.85, 1)   # 底部信息调亮
+        # 语义自适应色：跟随系统外观，白天=深字、夜间=浅字，两种模式都清晰
+        white = NSColor.labelColor()              # 单词(主)
+        blue = NSColor.systemTealColor()          # 读音(强调,两模式都可读)
+        light = NSColor.labelColor()              # 释义(主)
+        foot = NSColor.tertiaryLabelColor()       # 底部信息
+        exjp = NSColor.secondaryLabelColor()      # 例句(日)
+        excn = NSColor.secondaryLabelColor()      # 例句(中)
 
         s = NSMutableAttributedString.alloc().init()
         e = self.roller.current()
@@ -241,8 +248,15 @@ class Controller(NSObject):
             s.appendAttributedString_(seg(rd + "\n", 15, blue))
             s.appendAttributedString_(seg("\n", 5, foot))
             s.appendAttributedString_(seg(w.get("meaning", "") + "\n", 16, light))
+            ex, exc = w.get("example", ""), w.get("example_cn", "")
+            if ex:
+                s.appendAttributedString_(seg("\n", 4, foot))
+                s.appendAttributedString_(seg("例  " + ex + "\n", 14, exjp))
+                if exc:
+                    s.appendAttributedString_(seg("　　" + exc + "\n", 12, excn))
             s.appendAttributedString_(seg("\n", 4, foot))
-            freq = w.get("freq", ""); tag = f"N1 · {freq}" if freq else "N1"
+            lv = w.get("level", "N1"); freq = w.get("freq", "")
+            tag = f"{lv} · {freq}" if freq else lv
             s.appendAttributedString_(seg(
                 f"{tag}    ·    本词第 {e['seen']+1}/{self.roller.graduate} 遍    ·    已掌握 {len(self.roller.known)}",
                 11, foot))
