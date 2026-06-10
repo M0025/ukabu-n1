@@ -6,7 +6,7 @@
 · 「会了」按钮：标记已掌握，永不再现。
 拖动移动 · 单击换下一个 · 右键菜单。进度自动保存。
 """
-import json, os, random
+import json, os, random, fcntl
 import build_data
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
@@ -46,6 +46,18 @@ PAD = 20
 BTN_W, BTN_H, GAP = 84, 26, 10
 FREQ_W = {"高频": 3.0, "中频": 2.0, "低频": 1.0}   # 频度权重(每轮出现次数)
 LEVEL_W = {"N1": 2.0, "N2": 1.0}                  # 级别权重(N1:N2 ≈ 2:1)
+
+_LOCK_FH = None
+def single_instance():
+    # 排他文件锁，进程存活期间持有；已有实例则返回 False。
+    # 防自启(LaunchAgent 直接跑二进制，绕过 LaunchServices 去重) + 手动启动撞出双框。
+    global _LOCK_FH
+    _LOCK_FH = open(os.path.join(DIR, ".lock"), "w")
+    try:
+        fcntl.flock(_LOCK_FH, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
 
 def jload(p, d):
     try:
@@ -350,6 +362,8 @@ class Controller(NSObject):
 
 
 def main():
+    if not single_instance():
+        return                      # 已有一个在跑，静默退出
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     ctrl = Controller.alloc().init(); ctrl.setup()
