@@ -62,7 +62,7 @@ bash install/setup-autostart.sh
 
 ```bash
 pip install py2app
-bash build/release.sh        # 产物 dist/ukabu-n1.app + dist/ukabu-n1.dmg
+bash scripts/release.sh        # 产物 dist/ukabu-n1.app + dist/ukabu-n1.dmg
 ```
 
 打 tag（`git tag v1.0.0 && git push --tags`）会触发 GitHub Actions 自动打包并发 Release。

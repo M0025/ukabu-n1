@@ -32,7 +32,7 @@ jobs:
           pip install -r requirements.txt py2app
 
       - name: Build app + dmg
-        run: bash build/release.sh
+        run: bash scripts/release.sh
         env:
           PYTHON: python
 
