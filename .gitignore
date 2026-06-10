@@ -1,0 +1,11 @@
+# 虚拟环境
+.venv/
+# 运行时数据（本地生成 / 个人进度，不入库）
+n1.json
+state.json
+config.json
+widget.log
+# Python / macOS
+__pycache__/
+*.pyc
+.DS_Store
