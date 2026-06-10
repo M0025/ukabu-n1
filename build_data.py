@@ -15,9 +15,10 @@ LEVELS = {"5-N1": "N1", "4-N2": "N2"}   # 想加 N3 就补 "3-N3":"N3"
 def strip(s):
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
-def main():
-    print(f"下载词库源 …\n  {SRC}")
-    raw = urllib.request.urlopen(SRC, timeout=30).read().decode("utf-8")
+def build(out_path=OUT, timeout=30):
+    """下载并解析上游 CSV，写出词库 JSON 到 out_path，返回词条列表。
+    可被 widget.py 在首启 / 「更新词库」时导入调用。失败抛异常。"""
+    raw = urllib.request.urlopen(SRC, timeout=timeout).read().decode("utf-8")
 
     rows = []
     for line in raw.splitlines():
@@ -50,8 +51,17 @@ def main():
         uniq.append(r)
 
     if not uniq:
-        sys.exit("没抽到词条，源格式可能变了。")
-    json.dump(uniq, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+        raise RuntimeError("没抽到词条，源格式可能变了。")
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    json.dump(uniq, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+    return uniq
+
+def main():
+    print(f"下载词库源 …\n  {SRC}")
+    try:
+        uniq = build(OUT)
+    except Exception as e:
+        sys.exit(str(e))
     n1 = sum(1 for r in uniq if r["level"] == "N1")
     n2 = sum(1 for r in uniq if r["level"] == "N2")
     print(f"✅ 生成 {len(uniq)} 词（N1 {n1} / N2 {n2}）→ {OUT}")

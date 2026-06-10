@@ -7,6 +7,7 @@
 拖动移动 · 单击换下一个 · 右键菜单。进度自动保存。
 """
 import json, os, random
+import build_data
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
     NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen,
@@ -22,11 +23,22 @@ from Foundation import (
 )
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(BASE, "words.json")
-CONF = os.path.join(BASE, "config.json")
-STATE = os.path.join(BASE, "state.json")
 
-DEFAULT_INTERVAL = 12.0
+# 数据目录：打成 .app 后 bundle 内只读，可写文件须放 Application Support；
+# 从源码直接跑（开发 / run.sh）时沿用项目目录，不打扰现有进度。
+def _data_dir():
+    if ".app/Contents/" in BASE:
+        d = os.path.expanduser("~/Library/Application Support/ukabu-n1")
+        os.makedirs(d, exist_ok=True)
+        return d
+    return BASE
+
+DIR = _data_dir()
+DATA = os.path.join(DIR, "words.json")    # 词库：首启联网生成（CC BY-NC，详见 README）
+CONF = os.path.join(DIR, "config.json")
+STATE = os.path.join(DIR, "state.json")
+
+DEFAULT_INTERVAL = 20.0
 WINDOW = 10
 GRADUATE = 10
 WIDTH = 300
@@ -163,9 +175,22 @@ class DragView(NSView):
 
 
 class Controller(NSObject):
+    def _load_words(self, force=False):
+        # 首启 / 强制刷新：本地无词库就联网生成。失败返回空，render 提示离线。
+        if force:
+            try: os.remove(DATA)
+            except OSError: pass
+        w = jload(DATA, [])
+        if not w:
+            try:
+                build_data.build(DATA); w = jload(DATA, [])
+            except Exception:
+                w = []
+        return w
+
     def setup(self):
         global CTRL; CTRL = self
-        self.words = jload(DATA, [])
+        self.words = self._load_words()
         self.conf = jload(CONF, {})
         self.interval = self.conf.get("interval", DEFAULT_INTERVAL)
         self.paused = False
@@ -235,6 +260,18 @@ class Controller(NSObject):
         excn = NSColor.secondaryLabelColor()      # 例句(中)
 
         s = NSMutableAttributedString.alloc().init()
+        if not self.words:
+            s.appendAttributedString_(seg("⚠️ 词库下载失败\n", 20, white, True))
+            s.appendAttributedString_(seg("请联网后右键 → 更新词库 重试", 13, foot))
+            self.btn.setHidden_(True)
+            self.tf.setAttributedStringValue_(s)
+            h = self.tf.cell().cellSizeForBounds_(NSMakeRect(0, 0, WIDTH, 10000)).height
+            h = float(int(h) + 1); totalW = WIDTH + 2 * PAD
+            self.tf.setFrame_(NSMakeRect(PAD, PAD, WIDTH, h))
+            newH = h + 2 * PAD
+            f = self.win.frame(); top = f.origin.y + f.size.height
+            self.win.setFrame_display_(NSMakeRect(f.origin.x, top - newH, totalW, newH), True)
+            return
         e = self.roller.current()
         if e is None:
             s.appendAttributedString_(seg("🎉 这批都标记会了！\n", 22, white, True))
@@ -291,6 +328,10 @@ class Controller(NSObject):
     def slower_(self, s):
         self.interval += 3; self.conf["interval"] = self.interval; jsave(CONF, self.conf); self.startTimer()
     def resetProgress_(self, s): self.roller._fresh(); self.roller.save(); self.render(); self.startTimer()
+    def refreshWords_(self, s):
+        self.words = self._load_words(force=True)
+        self.roller = Roller(self.words)   # 词条变动会按 total 不符自动重置进度
+        self.render(); self.startTimer()
     def quitApp_(self, s): NSApp.terminate_(None)
     def saveOrigin(self):
         o = self.win.frame().origin
@@ -301,7 +342,7 @@ class Controller(NSObject):
         for title, sel in [("✓ 会了(已掌握)", b"knewIt:"), ("⏸ 暂停 / ▶ 继续", b"togglePause:"),
                            ("下一个", b"nextWord:"), (None, None),
                            ("快一点", b"faster:"), ("慢一点", b"slower:"), (None, None),
-                           ("重置进度", b"resetProgress:"), ("退出", b"quitApp:")]:
+                           ("更新词库", b"refreshWords:"), ("重置进度", b"resetProgress:"), ("退出", b"quitApp:")]:
             if title is None: m.addItem_(NSMenuItem.separatorItem()); continue
             it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, "")
             it.setTarget_(self); m.addItem_(it)
