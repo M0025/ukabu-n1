@@ -20,7 +20,20 @@
 - **自动轮播**，可调速；单击换下一个；右键菜单（暂停 / 快慢 / 重置 / 退出）
 - 进度（state.json）、位置与速度（config.json）本地保存，关了重开接着学
 
-## 🚀 安装
+## 📦 下载安装（推荐）
+
+到 [Releases](https://github.com/M0025/ukabu-n1/releases) 按芯片下载，打开后把 **ukabu-n1** 拖进 Applications 即可。词库首次启动会自动联网获取。
+
+- Apple Silicon (M 系列) → `ukabu-n1-arm64.dmg`
+- Intel → `ukabu-n1-intel.dmg`
+
+>
+> 未签名（个人开源项目），首次打开若被 Gatekeeper 拦下，**右键点 app → 打开 → 再点「打开」**；或终端跑一次：
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/ukabu-n1.app
+> ```
+
+## 🚀 从源码运行 / 开发
 
 需要 macOS + Python 3。
 
@@ -43,6 +56,17 @@ python build_data.py        # 本地生成词库 words.json（N1 + N2）
 bash install/setup-autostart.sh
 ```
 
+> dmg 安装的用户：把 ukabu-n1 加进 **系统设置 → 通用 → 登录项** 即可开机自启。
+
+### 打包发布
+
+```bash
+pip install py2app
+bash build/release.sh        # 产物 dist/ukabu-n1.app + dist/ukabu-n1.dmg
+```
+
+打 tag（`git tag v1.0.0 && git push --tags`）会触发 GitHub Actions 自动打包并发 Release。
+
 ## 🕹 操作
 
 | 操作 | 效果 |
@@ -54,7 +78,7 @@ bash install/setup-autostart.sh
 
 ## 🙏 致谢 / 数据来源
 
-- 词库数据来自开源 Anki 卡组 **egg rolls JLPT10k**（[5mdld/anki-jlpt-decks](https://github.com/5mdld/anki-jlpt-decks)），版权归原作者。本仓库**不二次分发**其数据，`build_data.py` 在你本地生成 `words.json`。
+- 词库数据来自开源 Anki 卡组 **egg rolls JLPT10k**（[5mdld/anki-jlpt-decks](https://github.com/5mdld/anki-jlpt-decks)），以 **CC BY-NC 4.0** 授权，版权归原作者。本 app **不内置词库**：首次启动 / 「更新词库」时从上游源即时获取并存到 `~/Library/Application Support/ukabu-n1/`——这样原作者更新后你重启即得最新版。请勿将本数据用于商业用途。
 - 图标为 AI 生成的原创素材。
 
 ## 📄 License

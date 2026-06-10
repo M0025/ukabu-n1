@@ -1,0 +1,59 @@
+name: Release
+
+# 打 tag (vX.Y.Z) 即触发：在 macOS runner 上 py2app 打包，生成 dmg 并发到 Release。
+# 未签名 / 未公证（个人开源项目）；用户首次打开需「右键 → 打开」，详见 README。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:        # 也可在 Actions 页手动触发
+
+permissions:
+  contents: write           # 需要写权限来创建 Release
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { runner: macos-14, arch: arm64 }   # Apple Silicon
+          - { runner: macos-13, arch: intel }   # Intel (x86_64)
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt py2app
+
+      - name: Build app + dmg
+        run: bash build/release.sh
+        env:
+          PYTHON: python
+
+      - name: Rename dmg by arch
+        run: mv dist/ukabu-n1.dmg "dist/ukabu-n1-${{ matrix.arch }}.dmg"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ukabu-n1-${{ matrix.arch }}.dmg
+          body: |
+            ## 下载
+            按你的 Mac 芯片选：
+            - **Apple Silicon (M1/M2/M3…)** → `ukabu-n1-arm64.dmg`
+            - **Intel** → `ukabu-n1-intel.dmg`
+            - 不确定？ → 左上角  → 「关于本机」，看「芯片/处理器」
+
+            打开 dmg 后把 **ukabu-n1** 拖进 Applications。
+
+            未签名（个人开源项目），首次启动若被 Gatekeeper 拦：
+            **右键点 app → 打开 → 再点「打开」**，或终端跑一次：
+            `xattr -dr com.apple.quarantine /Applications/ukabu-n1.app`
+
+            词库首启自动联网获取。
