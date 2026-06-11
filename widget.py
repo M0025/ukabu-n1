@@ -6,12 +6,13 @@
 · 「会了」按钮：标记已掌握，永不再现。
 拖动移动 · 单击换下一个 · 右键菜单。进度自动保存。
 """
-import json, os, random, fcntl
+import json, os, random, fcntl, threading
+import urllib.request, urllib.parse
 import objc
 import build_data
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
-    NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen,
+    NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen, NSSound,
     NSApplicationActivationPolicyAccessory, NSWindowStyleMaskBorderless,
     NSBackingStoreBuffered, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorStationary,
@@ -38,6 +39,8 @@ DIR = _data_dir()
 DATA = os.path.join(DIR, "words.json")    # 词库：首启联网生成（CC BY-NC，详见 README）
 CONF = os.path.join(DIR, "config.json")
 STATE = os.path.join(DIR, "state.json")
+AUDIO_DIR = os.path.join(DIR, "audio")    # 例句/单词 mp3 缓存（按需下载）
+MEDIA_URL = "https://raw.githubusercontent.com/5mdld/anki-jlpt-decks/HEAD/deck-source/medias/"
 
 DEFAULT_INTERVAL = 20.0
 WINDOW = 10
@@ -242,6 +245,32 @@ class DragView(NSView):
 
 class Controller(NSObject):
     @objc.python_method
+    def _play_audio(self, filename):
+        # 后台下载(带缓存)，下完回主线程播放。无文件名/失败则静默。
+        if not filename: return
+        def work():
+            path = os.path.join(AUDIO_DIR, filename)
+            if not os.path.exists(path):
+                try:
+                    os.makedirs(AUDIO_DIR, exist_ok=True)
+                    data = urllib.request.urlopen(MEDIA_URL + urllib.parse.quote(filename), timeout=8).read()
+                    with open(path, "wb") as f: f.write(data)
+                except Exception:
+                    return
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(b"_playFile:", path, False)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _playFile_(self, path):
+        snd = NSSound.alloc().initWithContentsOfFile_byReference_(path, False)
+        if not snd: return
+        old = getattr(self, "_snd", None)      # 先停上一个，避免重复点叠音
+        if old is not None and old.isPlaying(): old.stop()
+        self._snd = snd; snd.play()            # 留引用防止播放中被回收
+
+    def playWord_(self, s): self._play_audio(getattr(self, "_cur_word_audio", ""))
+    def playExample_(self, s): self._play_audio(getattr(self, "_cur_ex_audio", ""))
+
+    @objc.python_method
     def _load_words(self, force=False):
         # 首启 / 强制刷新：本地无词库就联网生成。失败返回空，render 提示离线。
         if force:
@@ -301,6 +330,16 @@ class Controller(NSObject):
         btn.setTarget_(self); btn.setAction_("knewIt:")
         self.btn = btn; view.addSubview_(btn)
 
+        def mk_play(sel):
+            b = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, 22, 22))
+            b.setBordered_(False)
+            b.setAttributedTitle_(NSAttributedString.alloc().initWithString_attributes_(
+                "▶", {NSForegroundColorAttributeName: NSColor.systemTealColor(),
+                      NSFontAttributeName: NSFont.systemFontOfSize_(12)}))
+            b.setTarget_(self); b.setAction_(sel); view.addSubview_(b); return b
+        self.play_word = mk_play("playWord:")     # 单词音频(真人)
+        self.play_ex = mk_play("playExample:")    # 例句音频(合成)
+
         self.win.setContentView_(view)
 
         scr = NSScreen.screens()[0].visibleFrame()
@@ -345,6 +384,7 @@ class Controller(NSObject):
                 msg = self._seg("🎉 这批都标记会了！\n", 22, white, True), self._seg("右键可重置进度", 13, foot)
         if msg:
             self.btn.setHidden_(True); self.ruby.setHidden_(True); self.tf_bot.setHidden_(True)
+            self.play_word.setHidden_(True); self.play_ex.setHidden_(True)
             s = NSMutableAttributedString.alloc().init()
             for part in msg: s.appendAttributedString_(part)
             h = self._tf_h(self.tf_top, s)
@@ -366,12 +406,17 @@ class Controller(NSObject):
         top.appendAttributedString_(self._seg(w.get("meaning", ""), 16, light))
         h_top = self._tf_h(self.tf_top, top)
 
+        # 音频文件名(供 ▶ 按钮)
+        self._cur_word_audio = w.get("word_audio", "")
+        self._cur_ex_audio = w.get("example_audio", "")
+        EXIND = 22                              # 例句左缩进，给 ▶ 留位
+
         ruby_segs = w.get("example_ruby") or []
         has_ex = bool(ruby_segs)
         if has_ex:
             self.ruby.setHidden_(False)
-            self.ruby.setSegments_([["例  ", ""]] + ruby_segs)
-            h_ruby = self.ruby.heightForWidth_(WIDTH)
+            self.ruby.setSegments_(ruby_segs)   # 「例」前缀由 ▶ 按钮替代
+            h_ruby = self.ruby.heightForWidth_(WIDTH - EXIND)
         else:
             self.ruby.setHidden_(True); h_ruby = 0.0
 
@@ -395,9 +440,21 @@ class Controller(NSObject):
         y = newH - PAD
         y -= h_top; self.tf_top.setFrame_(NSMakeRect(PAD, y, WIDTH, h_top)); y -= GAPV
         if has_ex:
-            y -= h_ruby; self.ruby.setFrame_(NSMakeRect(PAD, y, WIDTH, h_ruby)); y -= GAPV
+            y -= h_ruby; self.ruby.setFrame_(NSMakeRect(PAD + EXIND, y, WIDTH - EXIND, h_ruby)); ruby_y = y; y -= GAPV
         y -= h_bot; self.tf_bot.setFrame_(NSMakeRect(PAD, y, WIDTH, h_bot))
         self.btn.setFrame_(NSMakeRect(totalW - PAD - BTN_W, PAD - 2, BTN_W, BTN_H))
+
+        # ▶ 单词：词行右上角；▶ 例句：例句首行左侧
+        if self._cur_word_audio:
+            self.play_word.setHidden_(False)
+            self.play_word.setFrame_(NSMakeRect(totalW - PAD - 22, newH - PAD - 30, 22, 22))
+        else:
+            self.play_word.setHidden_(True)
+        if has_ex and self._cur_ex_audio:
+            self.play_ex.setHidden_(False)
+            self.play_ex.setFrame_(NSMakeRect(PAD - 2, ruby_y + h_ruby - 31, 22, 22))
+        else:
+            self.play_ex.setHidden_(True)
 
         f = self.win.frame(); wtop = f.origin.y + f.size.height
         self.win.setFrame_display_(NSMakeRect(f.origin.x, wtop - newH, totalW, newH), True)
