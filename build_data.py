@@ -38,6 +38,12 @@ def parse_furigana(raw):
         segs.append(seg); pos = m.end()
     return segs
 
+def snd(c, i):
+    """从 `[sound:文件名.mp3]` 列抽出文件名；越界/无音频返回 ""。"""
+    if i >= len(c): return ""
+    m = re.search(r"\[sound:(.+?)\]", c[i])
+    return m.group(1) if m else ""
+
 def build(out_path=OUT, timeout=30):
     """下载并解析上游 CSV，写出词库 JSON 到 out_path，返回词条列表。
     可被 widget.py 在首启 / 「更新词库」时导入调用。失败抛异常。"""
@@ -65,6 +71,7 @@ def build(out_path=OUT, timeout=30):
         rows.append({
             "word": word, "reading": c[6].strip(), "pos": c[5].strip(),
             "meaning": meaning, "example_ruby": ruby, "example_cn": strip(c[14]),
+            "word_audio": snd(c, 10), "example_audio": snd(c, 16),
             "freq": m.group(1) if m else "", "level": level,
         })
 
