@@ -6,6 +6,7 @@ n1.json
 state.json
 config.json
 widget.log
+.lock
 # py2app 打包产物
 build/
 dist/

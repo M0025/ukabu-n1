@@ -7,6 +7,7 @@
 拖动移动 · 单击换下一个 · 右键菜单。进度自动保存。
 """
 import json, os, random, fcntl
+import objc
 import build_data
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
@@ -44,6 +45,8 @@ GRADUATE = 10
 WIDTH = 300
 PAD = 20
 BTN_W, BTN_H, GAP = 84, 26, 10
+GAPV = 6                       # 内容块之间竖直间距
+EX_BASE, EX_RUBY = 14, 9       # 例句正文 / 假名注音字号
 FREQ_W = {"高频": 3.0, "中频": 2.0, "低频": 1.0}   # 频度权重(每轮出现次数)
 LEVEL_W = {"N1": 2.0, "N2": 1.0}                  # 级别权重(N1:N2 ≈ 2:1)
 
@@ -170,6 +173,57 @@ class Roller:
 CTRL = None
 
 
+class RubyView(NSView):
+    """手绘注音例句：逐片段画汉字，在汉字正上方画小号假名，按宽度自动换行。
+    片段来自 build_data.parse_furigana：[base, reading] 或 [base, reading, 1](目标词)。"""
+    def isFlipped(self): return True
+    def setSegments_(self, segs):
+        self._segs = list(segs or [])
+        self.setNeedsDisplay_(True)
+    @objc.python_method
+    def _fonts(self):
+        return (NSFont.systemFontOfSize_(EX_BASE), NSFont.boldSystemFontOfSize_(EX_BASE),
+                NSFont.systemFontOfSize_(EX_RUBY))
+    @objc.python_method
+    def _astr(self, s, f, c=None):
+        a = {NSFontAttributeName: f}
+        if c is not None: a[NSForegroundColorAttributeName] = c
+        return NSAttributedString.alloc().initWithString_attributes_(s, a)
+    @objc.python_method
+    def _layout(self, width):
+        base_f, bold_f, ruby_f = self._fonts()
+        rh = self._astr("あ", ruby_f).size().height
+        bh = self._astr("あ", base_f).size().height
+        line_h = rh + bh
+        lines = [[]]; x = 0.0
+        for seg in getattr(self, "_segs", []):
+            base, reading = seg[0], seg[1]; bold = len(seg) > 2
+            bw = self._astr(base, bold_f if bold else base_f).size().width
+            if x + bw > width and x > 0:
+                lines.append([]); x = 0.0
+            lines[-1].append((base, reading, bold, x, bw)); x += bw
+        return lines, line_h, rh
+    def heightForWidth_(self, width):
+        if not getattr(self, "_segs", []): return 0.0
+        lines, line_h, _ = self._layout(width)
+        return float(len(lines) * line_h)
+    def drawRect_(self, rect):
+        if not getattr(self, "_segs", []): return
+        base_f, bold_f, ruby_f = self._fonts()
+        base_c = NSColor.secondaryLabelColor(); bold_c = NSColor.systemTealColor()
+        ruby_c = NSColor.tertiaryLabelColor()
+        lines, line_h, rh = self._layout(self.frame().size.width)
+        y = 0.0
+        for line in lines:
+            for (base, reading, bold, x, bw) in line:
+                self._astr(base, bold_f if bold else base_f, bold_c if bold else base_c)\
+                    .drawAtPoint_(NSMakePoint(x, y + rh))
+                if reading:
+                    r = self._astr(reading, ruby_f, ruby_c); rw = r.size().width
+                    r.drawAtPoint_(NSMakePoint(x + (bw - rw) / 2.0, y))
+            y += line_h
+
+
 class DragView(NSView):
     def acceptsFirstMouse_(self, e): return True
     def mouseDown_(self, e):
@@ -187,6 +241,7 @@ class DragView(NSView):
 
 
 class Controller(NSObject):
+    @objc.python_method
     def _load_words(self, force=False):
         # 首启 / 强制刷新：本地无词库就联网生成。失败返回空，render 提示离线。
         if force:
@@ -231,10 +286,15 @@ class Controller(NSObject):
         fx.setAutoresizingMask_(18)
         view.addSubview_(fx)
 
-        tf = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD, PAD, WIDTH, 60))
-        tf.setBezeled_(False); tf.setDrawsBackground_(False)
-        tf.setEditable_(False); tf.setSelectable_(False); tf.cell().setWraps_(True)
-        self.tf = tf; view.addSubview_(tf)
+        def mk_tf():
+            t = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD, PAD, WIDTH, 20))
+            t.setBezeled_(False); t.setDrawsBackground_(False)
+            t.setEditable_(False); t.setSelectable_(False); t.cell().setWraps_(True)
+            view.addSubview_(t); return t
+        self.tf_top = mk_tf()                    # 单词 + 读音 + 释义
+        self.ruby = RubyView.alloc().initWithFrame_(NSMakeRect(PAD, PAD, WIDTH, 20))
+        view.addSubview_(self.ruby)              # 例句(注音)
+        self.tf_bot = mk_tf()                    # 例句中译 + 底部信息
 
         btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, BTN_W, BTN_H))
         btn.setTitle_("✓ 会了"); btn.setBezelStyle_(1); btn.setFont_(NSFont.systemFontOfSize_(12))
@@ -256,70 +316,91 @@ class Controller(NSObject):
 
         self.render(); self.startTimer()
 
-    def render(self):
+    @objc.python_method
+    def _seg(self, t, size, color, bold=False):
         para = NSMutableParagraphStyle.alloc().init(); para.setLineSpacing_(3.0)
-        def seg(t, size, color, bold=False):
-            f = NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size)
-            return NSAttributedString.alloc().initWithString_attributes_(
-                t, {NSFontAttributeName: f, NSForegroundColorAttributeName: color,
-                    NSParagraphStyleAttributeName: para})
-        # 语义自适应色：跟随系统外观，白天=深字、夜间=浅字，两种模式都清晰
-        white = NSColor.labelColor()              # 单词(主)
-        blue = NSColor.systemTealColor()          # 读音(强调,两模式都可读)
-        light = NSColor.labelColor()              # 释义(主)
-        foot = NSColor.tertiaryLabelColor()       # 底部信息
-        exjp = NSColor.secondaryLabelColor()      # 例句(日)
-        excn = NSColor.secondaryLabelColor()      # 例句(中)
+        f = NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size)
+        return NSAttributedString.alloc().initWithString_attributes_(
+            t, {NSFontAttributeName: f, NSForegroundColorAttributeName: color,
+                NSParagraphStyleAttributeName: para})
 
-        s = NSMutableAttributedString.alloc().init()
+    @objc.python_method
+    def _tf_h(self, tf, astr):
+        tf.setAttributedStringValue_(astr)
+        return float(int(tf.cell().cellSizeForBounds_(NSMakeRect(0, 0, WIDTH, 10000)).height) + 1)
+
+    def render(self):
+        white = NSColor.labelColor(); blue = NSColor.systemTealColor()
+        light = NSColor.labelColor(); foot = NSColor.tertiaryLabelColor()
+        excn = NSColor.secondaryLabelColor()
+        totalW = WIDTH + 2 * PAD
+
+        # 非常规状态：离线 / 全部已掌握 —— 只用 tf_top 顶部一块
+        msg = None
         if not self.words:
-            s.appendAttributedString_(seg("⚠️ 词库下载失败\n", 20, white, True))
-            s.appendAttributedString_(seg("请联网后右键 → 更新词库 重试", 13, foot))
-            self.btn.setHidden_(True)
-            self.tf.setAttributedStringValue_(s)
-            h = self.tf.cell().cellSizeForBounds_(NSMakeRect(0, 0, WIDTH, 10000)).height
-            h = float(int(h) + 1); totalW = WIDTH + 2 * PAD
-            self.tf.setFrame_(NSMakeRect(PAD, PAD, WIDTH, h))
+            msg = self._seg("⚠️ 词库下载失败\n", 20, white, True), self._seg("请联网后右键 → 更新词库 重试", 13, foot)
+        else:
+            e = self.roller.current()
+            if e is None:
+                msg = self._seg("🎉 这批都标记会了！\n", 22, white, True), self._seg("右键可重置进度", 13, foot)
+        if msg:
+            self.btn.setHidden_(True); self.ruby.setHidden_(True); self.tf_bot.setHidden_(True)
+            s = NSMutableAttributedString.alloc().init()
+            for part in msg: s.appendAttributedString_(part)
+            h = self._tf_h(self.tf_top, s)
+            self.tf_top.setHidden_(False)
             newH = h + 2 * PAD
+            self.tf_top.setFrame_(NSMakeRect(PAD, PAD, WIDTH, h))
             f = self.win.frame(); top = f.origin.y + f.size.height
             self.win.setFrame_display_(NSMakeRect(f.origin.x, top - newH, totalW, newH), True)
             return
-        e = self.roller.current()
-        if e is None:
-            s.appendAttributedString_(seg("🎉 这批都标记会了！\n", 22, white, True))
-            s.appendAttributedString_(seg("右键可重置进度", 13, foot))
-            self.btn.setHidden_(True)
-        else:
-            self.btn.setHidden_(False)
-            w = self.words[e["idx"]]
-            s.appendAttributedString_(seg(w["word"] + "\n", 30, white, True))
-            rd = f"{w.get('reading','')}    {w.get('pos','')}".strip()
-            s.appendAttributedString_(seg(rd + "\n", 15, blue))
-            s.appendAttributedString_(seg("\n", 5, foot))
-            s.appendAttributedString_(seg(w.get("meaning", "") + "\n", 16, light))
-            ex, exc = w.get("example", ""), w.get("example_cn", "")
-            if ex:
-                s.appendAttributedString_(seg("\n", 4, foot))
-                s.appendAttributedString_(seg("例  " + ex + "\n", 14, exjp))
-                if exc:
-                    s.appendAttributedString_(seg("　　" + exc + "\n", 12, excn))
-            s.appendAttributedString_(seg("\n", 4, foot))
-            lv = w.get("level", "N1"); freq = w.get("freq", "")
-            tag = f"{lv} · {freq}" if freq else lv
-            s.appendAttributedString_(seg(
-                f"{tag}    ·    本词第 {e['seen']+1}/{self.roller.graduate} 遍    ·    已掌握 {len(self.roller.known)}",
-                11, foot))
 
-        self.tf.setAttributedStringValue_(s)
-        h = self.tf.cell().cellSizeForBounds_(NSMakeRect(0, 0, WIDTH, 10000)).height
-        h = float(int(h) + 1)
-        totalW = WIDTH + 2 * PAD
-        bottom = PAD + (BTN_H + GAP if e is not None else 0)
-        self.tf.setFrame_(NSMakeRect(PAD, bottom, WIDTH, h))
+        # 常规：tf_top(词/读音/释义) + ruby(例句注音) + tf_bot(中译 + 底部信息)
+        self.btn.setHidden_(False); self.tf_top.setHidden_(False)
+        w = self.words[e["idx"]]
+        top = NSMutableAttributedString.alloc().init()
+        top.appendAttributedString_(self._seg(w["word"] + "\n", 30, white, True))
+        rd = f"{w.get('reading','')}    {w.get('pos','')}".strip()
+        top.appendAttributedString_(self._seg(rd + "\n", 15, blue))
+        top.appendAttributedString_(self._seg("\n", 5, foot))
+        top.appendAttributedString_(self._seg(w.get("meaning", ""), 16, light))
+        h_top = self._tf_h(self.tf_top, top)
+
+        ruby_segs = w.get("example_ruby") or []
+        has_ex = bool(ruby_segs)
+        if has_ex:
+            self.ruby.setHidden_(False)
+            self.ruby.setSegments_([["例  ", ""]] + ruby_segs)
+            h_ruby = self.ruby.heightForWidth_(WIDTH)
+        else:
+            self.ruby.setHidden_(True); h_ruby = 0.0
+
+        bot = NSMutableAttributedString.alloc().init()
+        exc = w.get("example_cn", "")
+        if has_ex and exc:
+            bot.appendAttributedString_(self._seg("　　" + exc + "\n", 12, excn))
+        bot.appendAttributedString_(self._seg("\n", 4, foot))
+        lv = w.get("level", "N1"); freq = w.get("freq", "")
+        tag = f"{lv} · {freq}" if freq else lv
+        bot.appendAttributedString_(self._seg(
+            f"{tag}    ·    本词第 {e['seen']+1}/{self.roller.graduate} 遍    ·    已掌握 {len(self.roller.known)}",
+            11, foot))
+        h_bot = self._tf_h(self.tf_bot, bot); self.tf_bot.setHidden_(False)
+
+        blocks = [h_top] + ([h_ruby] if has_ex else []) + [h_bot]
+        content = sum(blocks) + GAPV * (len(blocks) - 1)
+        bottom = PAD + BTN_H + GAP
+        newH = bottom + content + PAD
+
+        y = newH - PAD
+        y -= h_top; self.tf_top.setFrame_(NSMakeRect(PAD, y, WIDTH, h_top)); y -= GAPV
+        if has_ex:
+            y -= h_ruby; self.ruby.setFrame_(NSMakeRect(PAD, y, WIDTH, h_ruby)); y -= GAPV
+        y -= h_bot; self.tf_bot.setFrame_(NSMakeRect(PAD, y, WIDTH, h_bot))
         self.btn.setFrame_(NSMakeRect(totalW - PAD - BTN_W, PAD - 2, BTN_W, BTN_H))
-        newH = h + bottom + PAD
-        f = self.win.frame(); top = f.origin.y + f.size.height
-        self.win.setFrame_display_(NSMakeRect(f.origin.x, top - newH, totalW, newH), True)
+
+        f = self.win.frame(); wtop = f.origin.y + f.size.height
+        self.win.setFrame_display_(NSMakeRect(f.origin.x, wtop - newH, totalW, newH), True)
 
     def startTimer(self):
         if getattr(self, "timer", None): self.timer.invalidate()
