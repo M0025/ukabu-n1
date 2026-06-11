@@ -1,59 +1,60 @@
 name: Release
 
-# 打 tag (vX.Y.Z) 即触发：在 macOS runner 上 py2app 打包，生成 dmg 并发到 Release。
+# 打 tag (vX.Y.Z) 即触发：在 Apple Silicon runner 上用 python.org 的 universal2
+# Python 打一个 **通吃 Intel + Apple Silicon** 的 dmg，发到 Release。
+# （GitHub 的 Intel macos-13 runner 已退役/不可用，故不再分架构跑，改 universal2 单包。）
 # 未签名 / 未公证（个人开源项目）；用户首次打开需「右键 → 打开」，详见 README。
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:        # 也可在 Actions 页手动触发
+  workflow_dispatch:
 
 permissions:
-  contents: write           # 需要写权限来创建 Release
+  contents: write
+
+env:
+  PYVER: "3.13.1"
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - { runner: macos-14, arch: arm64 }   # Apple Silicon
-          - { runner: macos-13, arch: intel }   # Intel (x86_64)
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
+      # python.org 的 macos11 pkg 是 universal2（arm64 + x86_64），
+      # 打出来的 .app 内嵌的 Python.framework 也是 universal2 → 能在 Intel 上跑。
+      - name: Install universal2 Python
+        run: |
+          curl -fL -o python.pkg "https://www.python.org/ftp/python/${PYVER}/python-${PYVER}-macos11.pkg"
+          sudo installer -pkg python.pkg -target /
+          echo "/Library/Frameworks/Python.framework/Versions/3.13/bin" >> "$GITHUB_PATH"
 
       - name: Install deps
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt py2app
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt py2app
 
       - name: Build app + dmg
         run: bash scripts/release.sh
         env:
-          PYTHON: python
+          PYTHON: python3
 
-      - name: Rename dmg by arch
-        run: mv dist/ukabu-n1.dmg "dist/ukabu-n1-${{ matrix.arch }}.dmg"
+      - name: Verify universal2
+        run: |
+          lipo -info dist/ukabu-n1.app/Contents/MacOS/python || true
+          mv dist/ukabu-n1.dmg dist/ukabu-n1-universal.dmg
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ukabu-n1-${{ matrix.arch }}.dmg
+          files: dist/ukabu-n1-universal.dmg
           body: |
             ## 下载
-            按你的 Mac 芯片选：
-            - **Apple Silicon (M1/M2/M3…)** → `ukabu-n1-arm64.dmg`
-            - **Intel** → `ukabu-n1-intel.dmg`
-            - 不确定？ → 左上角  → 「关于本机」，看「芯片/处理器」
-
-            打开 dmg 后把 **ukabu-n1** 拖进 Applications。
+            `ukabu-n1-universal.dmg` —— **Intel 和 Apple Silicon 通用**，打开后把 **ukabu-n1** 拖进 Applications。
 
             未签名（个人开源项目），首次启动若被 Gatekeeper 拦：
             **右键点 app → 打开 → 再点「打开」**，或终端跑一次：
             `xattr -dr com.apple.quarantine /Applications/ukabu-n1.app`
 
-            词库首启自动联网获取。
+            词库 / 音频首次使用时自动联网获取。

@@ -22,10 +22,7 @@
 
 ## 📦 下载安装（推荐）
 
-到 [Releases](https://github.com/M0025/ukabu-n1/releases) 按芯片下载，打开后把 **ukabu-n1** 拖进 Applications 即可。词库首次启动会自动联网获取。
-
-- Apple Silicon (M 系列) → `ukabu-n1-arm64.dmg`
-- Intel → `ukabu-n1-intel.dmg`
+到 [Releases](https://github.com/M0025/ukabu-n1/releases) 下载 `ukabu-n1-universal.dmg`（**Intel 与 Apple Silicon 通用**），打开后把 **ukabu-n1** 拖进 Applications 即可。词库首次启动会自动联网获取。
 
 >
 > 未签名（个人开源项目），首次打开若被 Gatekeeper 拦下，**右键点 app → 打开 → 再点「打开」**；或终端跑一次：
