@@ -13,6 +13,7 @@ import build_data
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
     NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen, NSSound,
+    NSStatusBar, NSVariableStatusItemLength,
     NSApplicationActivationPolicyAccessory, NSWindowStyleMaskBorderless,
     NSBackingStoreBuffered, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorStationary,
@@ -353,6 +354,13 @@ class Controller(NSObject):
         self.win.setFrameOrigin_(NSMakePoint(x, y))
         self.win.orderFrontRegardless()
 
+        # 菜单栏图标：藏了也能从这里叫回来（无 Dock 图标，需要常驻控制入口）
+        self._hidden = False
+        self.status = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
+        self.status.button().setTitle_("語")
+        self.status.button().setToolTip_("ukabu-n1 单词便签")
+        self.status.setMenu_(self._menu())
+
         self.render(); self.startTimer()
 
     @objc.python_method
@@ -487,16 +495,29 @@ class Controller(NSObject):
         o = self.win.frame().origin
         self.conf["x"] = float(o.x); self.conf["y"] = float(o.y); jsave(CONF, self.conf)
 
-    def popupMenu_(self, event):
+    @objc.python_method
+    def _menu(self):
         m = NSMenu.alloc().init()
-        for title, sel in [("✓ 会了(已掌握)", b"knewIt:"), ("⏸ 暂停 / ▶ 继续", b"togglePause:"),
+        toggle = "显示便签" if getattr(self, "_hidden", False) else "隐藏便签"
+        for title, sel in [(toggle, b"toggleHidden:"), (None, None),
+                           ("✓ 会了(已掌握)", b"knewIt:"), ("⏸ 暂停 / ▶ 继续", b"togglePause:"),
                            ("下一个", b"nextWord:"), (None, None),
                            ("快一点", b"faster:"), ("慢一点", b"slower:"), (None, None),
-                           ("更新词库", b"refreshWords:"), ("重置进度", b"resetProgress:"), ("退出", b"quitApp:")]:
+                           ("更新词库", b"refreshWords:"), ("重置进度", b"resetProgress:"), (None, None),
+                           ("退出", b"quitApp:")]:
             if title is None: m.addItem_(NSMenuItem.separatorItem()); continue
             it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, "")
             it.setTarget_(self); m.addItem_(it)
-        NSMenu.popUpContextMenu_withEvent_forView_(m, event, self.view)
+        return m
+
+    def toggleHidden_(self, s):
+        self._hidden = not getattr(self, "_hidden", False)
+        if self._hidden: self.win.orderOut_(None)
+        else: self.win.orderFrontRegardless()
+        self.status.setMenu_(self._menu())     # 刷新菜单里的「显示/隐藏」字样
+
+    def popupMenu_(self, event):
+        NSMenu.popUpContextMenu_withEvent_forView_(self._menu(), event, self.view)
 
 
 def main():
