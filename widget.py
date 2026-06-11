@@ -14,7 +14,7 @@ from _version import __version__
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
     NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen, NSSound,
-    NSStatusBar, NSVariableStatusItemLength, NSAlert,
+    NSStatusBar, NSVariableStatusItemLength, NSAlert, NSBezierPath,
     NSApplicationActivationPolicyAccessory, NSWindowStyleMaskBorderless,
     NSBackingStoreBuffered, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorStationary,
@@ -177,6 +177,19 @@ class Roller:
 
 
 CTRL = None
+
+
+class ScrimView(NSView):
+    """毛玻璃之上的自适应半透底：浅色模式浅底 / 深色模式深底，与字色(labelColor)
+    同源 → 不论壁纸深浅，字都有对比。不透明度可调。"""
+    def setAlpha_(self, a):
+        self._alpha = a; self.setNeedsDisplay_(True)
+    def drawRect_(self, r):
+        a = getattr(self, "_alpha", 0.6)
+        NSColor.windowBackgroundColor().colorWithAlphaComponent_(a).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 16.0, 16.0).fill()
+    def viewDidChangeEffectiveAppearance(self):
+        self.setNeedsDisplay_(True)        # 切换白天/夜间时重绘换底色
 
 
 class RubyView(NSView):
@@ -397,6 +410,11 @@ rm -rf "{tmp}"
         fx.setAutoresizingMask_(18)
         view.addSubview_(fx)
 
+        self.scrim = ScrimView.alloc().initWithFrame_(rect)   # 毛玻璃之上加自适应半透底，保证可读
+        self.scrim.setAutoresizingMask_(18)
+        self.scrim.setAlpha_(self.conf.get("opacity", 0.6))
+        view.addSubview_(self.scrim)
+
         def mk_tf():
             t = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD, PAD, WIDTH, 20))
             t.setBezeled_(False); t.setDrawsBackground_(False)
@@ -561,6 +579,11 @@ rm -rf "{tmp}"
         if e is not None: self.roller.mark_known(e["idx"])
         self.render(); self.startTimer()
     def togglePause_(self, s): self.paused = not self.paused; self.startTimer()
+    def clearer_(self, s): self._set_opacity(min(0.92, self.conf.get("opacity", 0.6) + 0.1))
+    def moreTransparent_(self, s): self._set_opacity(max(0.15, self.conf.get("opacity", 0.6) - 0.1))
+    @objc.python_method
+    def _set_opacity(self, v):
+        self.conf["opacity"] = round(v, 2); jsave(CONF, self.conf); self.scrim.setAlpha_(v)
     def faster_(self, s):
         self.interval = max(3.0, self.interval - 3); self.conf["interval"] = self.interval
         jsave(CONF, self.conf); self.startTimer()
@@ -589,6 +612,7 @@ rm -rf "{tmp}"
                            ("✓ 会了(已掌握)", b"knewIt:"), ("⏸ 暂停 / ▶ 继续", b"togglePause:"),
                            ("下一个", b"nextWord:"), (None, None),
                            ("快一点", b"faster:"), ("慢一点", b"slower:"), (None, None),
+                           ("更清晰", b"clearer:"), ("更透明", b"moreTransparent:"), (None, None),
                            ("更新词库", b"refreshWords:"), ("重置进度", b"resetProgress:"), (None, None),
                            ("退出", b"quitApp:")]:
             if title is None: m.addItem_(NSMenuItem.separatorItem()); continue
