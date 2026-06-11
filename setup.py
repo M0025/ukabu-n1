@@ -10,6 +10,8 @@
 """
 from setuptools import setup
 
+exec(open("_version.py").read())          # 取 __version__（单一来源）
+
 APP = ["widget.py"]
 DATA_FILES = []
 OPTIONS = {
@@ -20,8 +22,8 @@ OPTIONS = {
         "CFBundleName": "ukabu-n1",
         "CFBundleDisplayName": "ukabu-n1",
         "CFBundleIdentifier": "com.ukabu.n1",
-        "CFBundleVersion": "1.0.0",
-        "CFBundleShortVersionString": "1.0.0",
+        "CFBundleVersion": __version__,
+        "CFBundleShortVersionString": __version__,
         "LSUIElement": True,          # 纯悬浮挂件，无 Dock 图标（与 Accessory 策略一致）
         "LSMinimumSystemVersion": "11.0",
         "NSHumanReadableCopyright": "MIT © 2026 Misko · 词库 CC BY-NC 4.0 (5mdld/anki-jlpt-decks)",
