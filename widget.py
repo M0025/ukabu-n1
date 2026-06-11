@@ -14,7 +14,7 @@ from _version import __version__
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
     NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen, NSSound,
-    NSStatusBar, NSVariableStatusItemLength, NSAlert, NSBezierPath,
+    NSStatusBar, NSVariableStatusItemLength, NSAlert, NSBezierPath, NSImage,
     NSApplicationActivationPolicyAccessory, NSWindowStyleMaskBorderless,
     NSBackingStoreBuffered, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorStationary,
@@ -296,7 +296,8 @@ class Controller(NSObject):
         return tuple(out)
 
     @objc.python_method
-    def _check_update(self):
+    def _check_update(self, notify=False):
+        # notify=True 为手动「检查更新」：无新版/失败也弹提示；启动时静查不弹。
         def work():
             try:
                 req = urllib.request.Request(GITHUB_LATEST, headers={
@@ -304,6 +305,8 @@ class Controller(NSObject):
                 data = json.loads(urllib.request.urlopen(req, timeout=10).read())
                 tag = data.get("tag_name", "")
                 if not tag or self._vtuple(tag) <= self._vtuple(__version__):
+                    if notify:
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(b"_upToDate:", None, False)
                     return
                 url = ""
                 for a in data.get("assets", []):
@@ -314,12 +317,38 @@ class Controller(NSObject):
                 self._update = {"version": tag.lstrip("vV"), "url": url}
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(b"_onUpdateFound:", None, False)
             except Exception:
-                return
+                if notify:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(b"_checkFailed:", None, False)
         threading.Thread(target=work, daemon=True).start()
+
+    def checkUpdate_(self, s): self._manual_check = True; self._check_update(True)
+
+    @objc.python_method
+    def _app_icon(self):
+        for p in [os.path.join(BASE, "assets", "icon.icns"), os.path.join(BASE, "assets", "icon.png"),
+                  os.path.join(BASE, "icon.icns"), os.path.join(BASE, "..", "Resources", "icon.icns")]:
+            if os.path.exists(p):
+                img = NSImage.alloc().initWithContentsOfFile_(p)
+                if img: return img
+        return None
+
+    @objc.python_method
+    def _alert(self, msg, info=""):
+        al = NSAlert.alloc().init(); al.setMessageText_(msg)
+        if info: al.setInformativeText_(info)
+        ic = self._app_icon()
+        if ic: al.setIcon_(ic)
+        al.addButtonWithTitle_("好"); al.runModal()
+
+    def _upToDate_(self, _): self._alert(f"已是最新版 v{__version__}")
+    def _checkFailed_(self, _): self._alert("检查更新失败", "请检查网络后重试。")
 
     def _onUpdateFound_(self, _):
         self.status.button().setTitle_("語•")     # 红点提示有新版
         self.status.setMenu_(self._menu())
+        if getattr(self, "_manual_check", False):
+            self._manual_check = False
+            self._alert(f"发现新版 v{self._update['version']}", "点菜单栏「🟢 更新到」即可更新。")
 
     def doUpdate_(self, s):
         up = getattr(self, "_update", None)
@@ -327,6 +356,8 @@ class Controller(NSObject):
         al = NSAlert.alloc().init()
         al.setMessageText_(f"更新到 v{up['version']}？")
         al.setInformativeText_("将下载新版、自动替换并重启 ukabu-n1。进度不受影响。")
+        ic = self._app_icon()
+        if ic: al.setIcon_(ic)
         al.addButtonWithTitle_("更新"); al.addButtonWithTitle_("取消")
         if al.runModal_() != 1000:                 # NSAlertFirstButtonReturn
             return
@@ -386,6 +417,7 @@ rm -rf "{tmp}"
         self.interval = self.conf.get("interval", DEFAULT_INTERVAL)
         self.paused = False
         self.roller = Roller(self.words)
+        self._reset_history()
 
         totalW = WIDTH + 2 * PAD
         rect = NSMakeRect(0, 0, totalW, 140)
@@ -459,6 +491,8 @@ rm -rf "{tmp}"
         self.status.button().setTitle_("語")
         self.status.button().setToolTip_("ukabu-n1 单词便签")
         self.status.setMenu_(self._menu())
+        _ic = self._app_icon()                 # 统一弹框/系统 UI 图标（源码版默认是 Python 图标）
+        if _ic: NSApp.setApplicationIconImage_(_ic)
 
         self.render(); self.startTimer(); self._check_update()
 
@@ -481,11 +515,12 @@ rm -rf "{tmp}"
         excn = NSColor.secondaryLabelColor()
         totalW = WIDTH + 2 * PAD
 
-        # 非常规状态：离线 / 全部已掌握 —— 只用 tf_top 顶部一块
-        msg = None
+        reviewing = bool(getattr(self, "history", None)) and self.hpos < len(self.history) - 1
+        # 非常规状态：离线 / 全部已掌握 —— 只用 tf_top 顶部一块（回看模式下不触发）
+        msg = None; e = None
         if not self.words:
             msg = self._seg("⚠️ 词库下载失败\n", 20, white, True), self._seg("请联网后右键 → 更新词库 重试", 13, foot)
-        else:
+        elif not reviewing:
             e = self.roller.current()
             if e is None:
                 msg = self._seg("🎉 这批都标记会了！\n", 22, white, True), self._seg("右键可重置进度", 13, foot)
@@ -503,8 +538,13 @@ rm -rf "{tmp}"
             return
 
         # 常规：tf_top(词/读音/释义) + ruby(例句注音) + tf_bot(中译 + 底部信息)
-        self.btn.setHidden_(False); self.tf_top.setHidden_(False)
-        w = self.words[e["idx"]]
+        self.tf_top.setHidden_(False)
+        if reviewing:
+            w = self.words[self.history[self.hpos]]
+            self.btn.setHidden_(True)              # 回看纯展示，不让标「会了」
+        else:
+            w = self.words[e["idx"]]
+            self.btn.setHidden_(False)
         top = NSMutableAttributedString.alloc().init()
         top.appendAttributedString_(self._seg(w["word"] + "\n", 30, white, True))
         rd = f"{w.get('reading','')}    {w.get('pos','')}".strip()
@@ -534,9 +574,11 @@ rm -rf "{tmp}"
         bot.appendAttributedString_(self._seg("\n", 4, foot))
         lv = w.get("level", "N1"); freq = w.get("freq", "")
         tag = f"{lv} · {freq}" if freq else lv
-        bot.appendAttributedString_(self._seg(
-            f"{tag}    ·    本词第 {e['seen']+1}/{self.roller.graduate} 遍    ·    已掌握 {len(self.roller.known)}",
-            11, foot))
+        if reviewing:
+            info = "（回看 · 点「下一个」继续）"
+        else:
+            info = f"本词第 {e['seen']+1}/{self.roller.graduate} 遍    ·    已掌握 {len(self.roller.known)}"
+        bot.appendAttributedString_(self._seg(f"{tag}    ·    {info}", 11, foot))
         h_bot = self._tf_h(self.tf_bot, bot); self.tf_bot.setHidden_(False)
 
         blocks = [h_top] + ([h_ruby] if has_ex else []) + [h_bot]
@@ -572,12 +614,39 @@ rm -rf "{tmp}"
             self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                 self.interval, self, b"tick:", None, True)
 
-    def tick_(self, t): self.roller.advance(); self.render()
-    def nextWord_(self, s): self.roller.advance(); self.render(); self.startTimer()
+    @objc.python_method
+    def _reset_history(self):
+        cur = self.roller.current()
+        self.history = [cur["idx"]] if cur else []
+        self.hpos = len(self.history) - 1
+
+    @objc.python_method
+    def _push_live(self):
+        cur = self.roller.current()
+        if cur:
+            self.history.append(cur["idx"])
+            if len(self.history) > 50: self.history.pop(0)
+        self.hpos = len(self.history) - 1
+
+    @objc.python_method
+    def _advance_live(self):
+        self.roller.advance(); self._push_live()
+
+    @objc.python_method
+    def _forward(self):
+        if self.history and self.hpos < len(self.history) - 1:
+            self.hpos += 1            # 回看中：沿历史往前走
+        else:
+            self._advance_live()      # 已在最新：推进新词
+    def tick_(self, t): self._forward(); self.render()
+    def nextWord_(self, s): self._forward(); self.render(); self.startTimer()
+    def prevWord_(self, s):           # 只回看一格，不停自动轮播（过会儿自己又往前播）
+        if self.hpos > 0: self.hpos -= 1; self.render()
     def knewIt_(self, s):
+        if self.history and self.hpos < len(self.history) - 1: return   # 回看时不响应
         e = self.roller.current()
         if e is not None: self.roller.mark_known(e["idx"])
-        self.render(); self.startTimer()
+        self._push_live(); self.render(); self.startTimer()
     def togglePause_(self, s): self.paused = not self.paused; self.startTimer()
     def clearer_(self, s): self._set_opacity(min(0.92, self.conf.get("opacity", 0.6) + 0.1))
     def moreTransparent_(self, s): self._set_opacity(max(0.15, self.conf.get("opacity", 0.6) - 0.1))
@@ -589,11 +658,11 @@ rm -rf "{tmp}"
         jsave(CONF, self.conf); self.startTimer()
     def slower_(self, s):
         self.interval += 3; self.conf["interval"] = self.interval; jsave(CONF, self.conf); self.startTimer()
-    def resetProgress_(self, s): self.roller._fresh(); self.roller.save(); self.render(); self.startTimer()
+    def resetProgress_(self, s): self.roller._fresh(); self.roller.save(); self._reset_history(); self.render(); self.startTimer()
     def refreshWords_(self, s):
         self.words = self._load_words(force=True)
         self.roller = Roller(self.words)   # 词条变动会按 total 不符自动重置进度
-        self.render(); self.startTimer()
+        self._reset_history(); self.render(); self.startTimer()
     def quitApp_(self, s): NSApp.terminate_(None)
     def saveOrigin(self):
         o = self.win.frame().origin
@@ -610,10 +679,11 @@ rm -rf "{tmp}"
         toggle = "显示便签" if getattr(self, "_hidden", False) else "隐藏便签"
         for title, sel in [(toggle, b"toggleHidden:"), (None, None),
                            ("✓ 会了(已掌握)", b"knewIt:"), ("⏸ 暂停 / ▶ 继续", b"togglePause:"),
-                           ("下一个", b"nextWord:"), (None, None),
+                           ("上一个", b"prevWord:"), ("下一个", b"nextWord:"), (None, None),
                            ("快一点", b"faster:"), ("慢一点", b"slower:"), (None, None),
                            ("更清晰", b"clearer:"), ("更透明", b"moreTransparent:"), (None, None),
                            ("更新词库", b"refreshWords:"), ("重置进度", b"resetProgress:"), (None, None),
+                           ("检查更新", b"checkUpdate:"), (None, None),
                            ("退出", b"quitApp:")]:
             if title is None: m.addItem_(NSMenuItem.separatorItem()); continue
             it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, "")
