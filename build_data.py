@@ -15,6 +15,29 @@ LEVELS = {"5-N1": "N1", "4-N2": "N2"}   # 想加 N3 就补 "3-N3":"N3"
 def strip(s):
     return re.sub(r"<[^>]+>", "", s or "").strip()
 
+_TOK = re.compile(r"([^\s\[\]\x01\x02]+)(?:\[([^\]]+)\])?")
+def parse_furigana(raw):
+    """把 Anki 注音格式 `<b>漢字[よみ]</b> 初期[しょき]の` 解析成片段列表。
+    每个片段 [base, reading]，目标词(原 <b>)再加一个 1 → [base, reading, 1]。
+    纯假名/标点 reading 为 ""。空输入返回 []。"""
+    if not raw:
+        return []
+    s = raw.replace("<b>", "\x01").replace("</b>", "\x02")
+    s = re.sub(r"<[^>]+>", "", s)
+    segs, bold, pos = [], False, 0
+    while pos < len(s):
+        ch = s[pos]
+        if ch == "\x01": bold = True; pos += 1; continue
+        if ch == "\x02": bold = False; pos += 1; continue
+        if ch.isspace(): pos += 1; continue
+        m = _TOK.match(s, pos)
+        if not m or not m.group(1):
+            pos += 1; continue
+        seg = [m.group(1), m.group(2) or ""]
+        if bold: seg.append(1)
+        segs.append(seg); pos = m.end()
+    return segs
+
 def build(out_path=OUT, timeout=30):
     """下载并解析上游 CSV，写出词库 JSON 到 out_path，返回词条列表。
     可被 widget.py 在首启 / 「更新词库」时导入调用。失败抛异常。"""
@@ -36,9 +59,12 @@ def build(out_path=OUT, timeout=30):
         if not word or not meaning:
             continue
         m = re.search(r"(高频|中频|低频)", deck)
+        ruby = parse_furigana(c[13])
+        if not ruby and c[12].strip():        # c[13] 缺注音时退回纯例句
+            ruby = [[strip(c[12]), ""]]
         rows.append({
             "word": word, "reading": c[6].strip(), "pos": c[5].strip(),
-            "meaning": meaning, "example": strip(c[12]), "example_cn": strip(c[14]),
+            "meaning": meaning, "example_ruby": ruby, "example_cn": strip(c[14]),
             "freq": m.group(1) if m else "", "level": level,
         })
 
