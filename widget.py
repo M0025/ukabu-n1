@@ -6,14 +6,15 @@
 · 「会了」按钮：标记已掌握，永不再现。
 拖动移动 · 单击换下一个 · 右键菜单。进度自动保存。
 """
-import json, os, random, fcntl, threading
+import json, os, random, fcntl, threading, subprocess, tempfile, plistlib
 import urllib.request, urllib.parse
 import objc
 import build_data
+from _version import __version__
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
     NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen, NSSound,
-    NSStatusBar, NSVariableStatusItemLength,
+    NSStatusBar, NSVariableStatusItemLength, NSAlert, NSBezierPath,
     NSApplicationActivationPolicyAccessory, NSWindowStyleMaskBorderless,
     NSBackingStoreBuffered, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorStationary,
@@ -42,6 +43,7 @@ CONF = os.path.join(DIR, "config.json")
 STATE = os.path.join(DIR, "state.json")
 AUDIO_DIR = os.path.join(DIR, "audio")    # 例句/单词 mp3 缓存（按需下载）
 MEDIA_URL = "https://raw.githubusercontent.com/5mdld/anki-jlpt-decks/HEAD/deck-source/medias/"
+GITHUB_LATEST = "https://api.github.com/repos/M0025/ukabu-n1/releases/latest"
 
 DEFAULT_INTERVAL = 20.0
 WINDOW = 10
@@ -177,6 +179,19 @@ class Roller:
 CTRL = None
 
 
+class ScrimView(NSView):
+    """毛玻璃之上的自适应半透底：浅色模式浅底 / 深色模式深底，与字色(labelColor)
+    同源 → 不论壁纸深浅，字都有对比。不透明度可调。"""
+    def setAlpha_(self, a):
+        self._alpha = a; self.setNeedsDisplay_(True)
+    def drawRect_(self, r):
+        a = getattr(self, "_alpha", 0.6)
+        NSColor.windowBackgroundColor().colorWithAlphaComponent_(a).set()
+        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 16.0, 16.0).fill()
+    def viewDidChangeEffectiveAppearance(self):
+        self.setNeedsDisplay_(True)        # 切换白天/夜间时重绘换底色
+
+
 class RubyView(NSView):
     """手绘注音例句：逐片段画汉字，在汉字正上方画小号假名，按宽度自动换行。
     片段来自 build_data.parse_furigana：[base, reading] 或 [base, reading, 1](目标词)。"""
@@ -271,6 +286,85 @@ class Controller(NSObject):
     def playWord_(self, s): self._play_audio(getattr(self, "_cur_word_audio", ""))
     def playExample_(self, s): self._play_audio(getattr(self, "_cur_ex_audio", ""))
 
+    # ---- 自动更新（查 GitHub Release → 下 universal dmg → 接力脚本换包重启）----
+    @objc.python_method
+    def _vtuple(self, s):
+        out = []
+        for p in s.lstrip("vV").split("."):
+            n = "".join(ch for ch in p if ch.isdigit())
+            out.append(int(n) if n else 0)
+        return tuple(out)
+
+    @objc.python_method
+    def _check_update(self):
+        def work():
+            try:
+                req = urllib.request.Request(GITHUB_LATEST, headers={
+                    "Accept": "application/vnd.github+json", "User-Agent": "ukabu-n1"})
+                data = json.loads(urllib.request.urlopen(req, timeout=10).read())
+                tag = data.get("tag_name", "")
+                if not tag or self._vtuple(tag) <= self._vtuple(__version__):
+                    return
+                url = ""
+                for a in data.get("assets", []):
+                    if a.get("name", "").endswith(".dmg"):
+                        url = a["browser_download_url"]
+                        if "universal" in a["name"]: break
+                if not url: return
+                self._update = {"version": tag.lstrip("vV"), "url": url}
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(b"_onUpdateFound:", None, False)
+            except Exception:
+                return
+        threading.Thread(target=work, daemon=True).start()
+
+    def _onUpdateFound_(self, _):
+        self.status.button().setTitle_("語•")     # 红点提示有新版
+        self.status.setMenu_(self._menu())
+
+    def doUpdate_(self, s):
+        up = getattr(self, "_update", None)
+        if not up: return
+        al = NSAlert.alloc().init()
+        al.setMessageText_(f"更新到 v{up['version']}？")
+        al.setInformativeText_("将下载新版、自动替换并重启 ukabu-n1。进度不受影响。")
+        al.addButtonWithTitle_("更新"); al.addButtonWithTitle_("取消")
+        if al.runModal_() != 1000:                 # NSAlertFirstButtonReturn
+            return
+        threading.Thread(target=self._do_update, args=(up,), daemon=True).start()
+
+    @objc.python_method
+    def _do_update(self, up):
+        try:
+            app_path = BASE[:BASE.index(".app/") + 4] if ".app/" in BASE else None
+            if not app_path: return               # 源码运行不自更新
+            tmp = tempfile.mkdtemp(prefix="ukabu-upd-")
+            dmg = os.path.join(tmp, "new.dmg")
+            urllib.request.urlretrieve(up["url"], dmg)
+            pl = plistlib.loads(subprocess.check_output(
+                ["hdiutil", "attach", dmg, "-nobrowse", "-plist"]))
+            mount = next(e["mount-point"] for e in pl.get("system-entities", []) if e.get("mount-point"))
+            staged = os.path.join(tmp, "ukabu-n1.app")
+            subprocess.run(["cp", "-R", os.path.join(mount, "ukabu-n1.app"), staged], check=True)
+            subprocess.run(["hdiutil", "detach", mount, "-quiet"])
+            pid = os.getpid()
+            sh = os.path.join(tmp, "swap.sh")
+            with open(sh, "w") as f:
+                f.write(f'''#!/bin/bash
+while kill -0 {pid} 2>/dev/null; do sleep 0.3; done
+rm -rf "{app_path}" && cp -R "{staged}" "{app_path}"
+xattr -dr com.apple.quarantine "{app_path}" 2>/dev/null
+open "{app_path}"
+rm -rf "{tmp}"
+''')
+            os.chmod(sh, 0o755)
+            subprocess.Popen(["/bin/bash", sh], start_new_session=True)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(b"_quitForUpdate:", None, False)
+        except Exception:
+            return
+
+    def _quitForUpdate_(self, _):
+        NSApp.terminate_(None)
+
     @objc.python_method
     def _load_words(self, force=False):
         # 首启 / 强制刷新：本地无词库就联网生成。失败返回空，render 提示离线。
@@ -315,6 +409,11 @@ class Controller(NSObject):
         fx.setWantsLayer_(True); fx.layer().setCornerRadius_(16.0); fx.layer().setMasksToBounds_(True)
         fx.setAutoresizingMask_(18)
         view.addSubview_(fx)
+
+        self.scrim = ScrimView.alloc().initWithFrame_(rect)   # 毛玻璃之上加自适应半透底，保证可读
+        self.scrim.setAutoresizingMask_(18)
+        self.scrim.setAlpha_(self.conf.get("opacity", 0.6))
+        view.addSubview_(self.scrim)
 
         def mk_tf():
             t = NSTextField.alloc().initWithFrame_(NSMakeRect(PAD, PAD, WIDTH, 20))
@@ -361,7 +460,7 @@ class Controller(NSObject):
         self.status.button().setToolTip_("ukabu-n1 单词便签")
         self.status.setMenu_(self._menu())
 
-        self.render(); self.startTimer()
+        self.render(); self.startTimer(); self._check_update()
 
     @objc.python_method
     def _seg(self, t, size, color, bold=False):
@@ -480,6 +579,11 @@ class Controller(NSObject):
         if e is not None: self.roller.mark_known(e["idx"])
         self.render(); self.startTimer()
     def togglePause_(self, s): self.paused = not self.paused; self.startTimer()
+    def clearer_(self, s): self._set_opacity(min(0.92, self.conf.get("opacity", 0.6) + 0.1))
+    def moreTransparent_(self, s): self._set_opacity(max(0.15, self.conf.get("opacity", 0.6) - 0.1))
+    @objc.python_method
+    def _set_opacity(self, v):
+        self.conf["opacity"] = round(v, 2); jsave(CONF, self.conf); self.scrim.setAlpha_(v)
     def faster_(self, s):
         self.interval = max(3.0, self.interval - 3); self.conf["interval"] = self.interval
         jsave(CONF, self.conf); self.startTimer()
@@ -498,11 +602,17 @@ class Controller(NSObject):
     @objc.python_method
     def _menu(self):
         m = NSMenu.alloc().init()
+        up = getattr(self, "_update", None)
+        if up:
+            it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                f"🟢 更新到 v{up['version']}", b"doUpdate:", "")
+            it.setTarget_(self); m.addItem_(it); m.addItem_(NSMenuItem.separatorItem())
         toggle = "显示便签" if getattr(self, "_hidden", False) else "隐藏便签"
         for title, sel in [(toggle, b"toggleHidden:"), (None, None),
                            ("✓ 会了(已掌握)", b"knewIt:"), ("⏸ 暂停 / ▶ 继续", b"togglePause:"),
                            ("下一个", b"nextWord:"), (None, None),
                            ("快一点", b"faster:"), ("慢一点", b"slower:"), (None, None),
+                           ("更清晰", b"clearer:"), ("更透明", b"moreTransparent:"), (None, None),
                            ("更新词库", b"refreshWords:"), ("重置进度", b"resetProgress:"), (None, None),
                            ("退出", b"quitApp:")]:
             if title is None: m.addItem_(NSMenuItem.separatorItem()); continue
