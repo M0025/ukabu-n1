@@ -359,7 +359,7 @@ class Controller(NSObject):
         ic = self._app_icon()
         if ic: al.setIcon_(ic)
         al.addButtonWithTitle_("更新"); al.addButtonWithTitle_("取消")
-        if al.runModal_() != 1000:                 # NSAlertFirstButtonReturn
+        if al.runModal() != 1000:                  # NSAlertFirstButtonReturn
             return
         threading.Thread(target=self._do_update, args=(up,), daemon=True).start()
 
