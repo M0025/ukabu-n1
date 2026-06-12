@@ -11,6 +11,19 @@ import json, os, re, sys, urllib.request
 SRC = "https://raw.githubusercontent.com/5mdld/anki-jlpt-decks/HEAD/deck-source/notes.csv"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "words.json")
 LEVELS = {"5-N1": "N1", "4-N2": "N2"}   # 想加 N3 就补 "3-N3":"N3"
+# 英文释义（JMdict/EDRDG, CC BY-SA）：开发时由 JMdict 预生成的小映射「词\t读音→英文」
+_GLOSS_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "glosses_en.json")
+_GLOSS_URL = "https://raw.githubusercontent.com/M0025/ukabu-n1/main/glosses_en.json"
+
+def load_glosses(timeout=30):
+    try:
+        if os.path.exists(_GLOSS_LOCAL):
+            return json.load(open(_GLOSS_LOCAL, encoding="utf-8"))
+    except Exception: pass
+    try:
+        return json.loads(urllib.request.urlopen(_GLOSS_URL, timeout=timeout).read())
+    except Exception:
+        return {}
 
 def strip(s):
     return re.sub(r"<[^>]+>", "", s or "").strip()
@@ -85,6 +98,9 @@ def build(out_path=OUT, timeout=30):
 
     if not uniq:
         raise RuntimeError("没抽到词条，源格式可能变了。")
+    gl = load_glosses(timeout)                  # 贴英文释义（缺则空，widget 端回退中文）
+    for r in uniq:
+        r["meaning_en"] = gl.get(f'{r["word"]}\t{r["reading"]}', "")
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     json.dump(uniq, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
     return uniq

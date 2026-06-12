@@ -14,7 +14,7 @@ from _version import __version__
 from AppKit import (
     NSApplication, NSApp, NSWindow, NSView, NSTextField, NSButton, NSVisualEffectView,
     NSColor, NSFont, NSMenu, NSMenuItem, NSEvent, NSTimer, NSScreen, NSSound,
-    NSStatusBar, NSVariableStatusItemLength, NSAlert, NSBezierPath, NSImage,
+    NSStatusBar, NSVariableStatusItemLength, NSAlert, NSBezierPath, NSImage, NSWorkspace,
     NSApplicationActivationPolicyAccessory, NSWindowStyleMaskBorderless,
     NSBackingStoreBuffered, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorStationary,
@@ -22,7 +22,7 @@ from AppKit import (
     NSFontAttributeName, NSForegroundColorAttributeName, NSParagraphStyleAttributeName,
 )
 from Foundation import (
-    NSObject, NSMakeRect, NSMakePoint,
+    NSObject, NSMakeRect, NSMakePoint, NSDistributedNotificationCenter,
     NSAttributedString, NSMutableAttributedString, NSMutableParagraphStyle,
 )
 
@@ -55,6 +55,38 @@ GAPV = 6                       # 内容块之间竖直间距
 EX_BASE, EX_RUBY = 14, 9       # 例句正文 / 假名注音字号
 FREQ_W = {"高频": 3.0, "中频": 2.0, "低频": 1.0}   # 频度权重(每轮出现次数)
 LEVEL_W = {"N1": 2.0, "N2": 1.0}                  # 级别权重(N1:N2 ≈ 2:1)
+
+# 中英界面文案（释义+整界面双语；lang 未设时按系统语言自动选）
+STR = {
+"zh": {
+ "ok":"好","update":"更新","cancel":"取消","quit":"退出",
+ "uptodate":"已是最新版 v{v}","check_fail_t":"检查更新失败","check_fail_i":"请检查网络后重试。",
+ "found_t":"发现新版 v{v}","found_i":"点菜单栏「🟢 更新到」即可更新。",
+ "confirm_t":"更新到 v{v}？","confirm_i":"将下载新版、自动替换并重启 ukabu-n1。进度不受影响。",
+ "knewit":"✓ 会了","tooltip":"ukabu-n1 单词便签",
+ "offline_t":"⚠️ 词库下载失败","offline_i":"请联网后右键 → 更新词库 重试",
+ "done_t":"🎉 这批都标记会了！","done_i":"右键可重置进度",
+ "review":"（回看 · 点「下一个」继续）","stats":"本词第 {seen}/{grad} 遍    ·    已掌握 {known}",
+ "m_update":"🟢 更新到 v{v}","m_show":"显示便签","m_hide":"隐藏便签","m_knewit":"✓ 会了(已掌握)",
+ "m_pause":"⏸ 暂停 / ▶ 继续","m_prev":"上一个","m_next":"下一个","m_faster":"快一点","m_slower":"慢一点",
+ "m_clearer":"更清晰","m_dimmer":"更透明","m_lang":"🌐 语言 / Language","m_refresh":"更新词库",
+ "m_reset":"重置进度","m_check":"检查更新","高频":"高频","中频":"中频","低频":"低频",
+},
+"en": {
+ "ok":"OK","update":"Update","cancel":"Cancel","quit":"Quit",
+ "uptodate":"You're on the latest version, v{v}","check_fail_t":"Update check failed","check_fail_i":"Check your connection and try again.",
+ "found_t":"New version v{v} available","found_i":"Click “🟢 Update” in the menu bar.",
+ "confirm_t":"Update to v{v}?","confirm_i":"Downloads the new version, replaces the app and restarts. Your progress is kept.",
+ "knewit":"✓ Got it","tooltip":"ukabu-n1 vocabulary widget",
+ "offline_t":"⚠️ Couldn't download word list","offline_i":"Connect to the internet, then right-click → Update word list",
+ "done_t":"🎉 All marked as known!","done_i":"Right-click to reset progress",
+ "review":"(reviewing · click Next to go on)","stats":"seen {seen}/{grad}    ·    known {known}",
+ "m_update":"🟢 Update to v{v}","m_show":"Show widget","m_hide":"Hide widget","m_knewit":"✓ Got it (mark known)",
+ "m_pause":"⏸ Pause / ▶ Resume","m_prev":"Previous","m_next":"Next","m_faster":"Faster","m_slower":"Slower",
+ "m_clearer":"More opaque","m_dimmer":"More transparent","m_lang":"🌐 Language / 语言","m_refresh":"Update word list",
+ "m_reset":"Reset progress","m_check":"Check for updates","高频":"high-freq","中频":"mid-freq","低频":"low-freq",
+},
+}
 
 _LOCK_FH = None
 def single_instance():
@@ -338,27 +370,27 @@ class Controller(NSObject):
         if info: al.setInformativeText_(info)
         ic = self._app_icon()
         if ic: al.setIcon_(ic)
-        al.addButtonWithTitle_("好"); al.runModal()
+        al.addButtonWithTitle_(self._t("ok")); al.runModal()
 
-    def _upToDate_(self, _): self._alert(f"已是最新版 v{__version__}")
-    def _checkFailed_(self, _): self._alert("检查更新失败", "请检查网络后重试。")
+    def _upToDate_(self, _): self._alert(self._t("uptodate", v=__version__))
+    def _checkFailed_(self, _): self._alert(self._t("check_fail_t"), self._t("check_fail_i"))
 
     def _onUpdateFound_(self, _):
         self.status.button().setTitle_("語•")     # 红点提示有新版
         self.status.setMenu_(self._menu())
         if getattr(self, "_manual_check", False):
             self._manual_check = False
-            self._alert(f"发现新版 v{self._update['version']}", "点菜单栏「🟢 更新到」即可更新。")
+            self._alert(self._t("found_t", v=self._update['version']), self._t("found_i"))
 
     def doUpdate_(self, s):
         up = getattr(self, "_update", None)
         if not up: return
         al = NSAlert.alloc().init()
-        al.setMessageText_(f"更新到 v{up['version']}？")
-        al.setInformativeText_("将下载新版、自动替换并重启 ukabu-n1。进度不受影响。")
+        al.setMessageText_(self._t("confirm_t", v=up['version']))
+        al.setInformativeText_(self._t("confirm_i"))
         ic = self._app_icon()
         if ic: al.setIcon_(ic)
-        al.addButtonWithTitle_("更新"); al.addButtonWithTitle_("取消")
+        al.addButtonWithTitle_(self._t("update")); al.addButtonWithTitle_(self._t("cancel"))
         if al.runModal() != 1000:                  # NSAlertFirstButtonReturn
             return
         threading.Thread(target=self._do_update, args=(up,), daemon=True).start()
@@ -458,7 +490,7 @@ rm -rf "{tmp}"
         self.tf_bot = mk_tf()                    # 例句中译 + 底部信息
 
         btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, BTN_W, BTN_H))
-        btn.setTitle_("✓ 会了"); btn.setBezelStyle_(1); btn.setFont_(NSFont.systemFontOfSize_(12))
+        btn.setTitle_(self._t("knewit")); btn.setBezelStyle_(1); btn.setFont_(NSFont.systemFontOfSize_(12))
         btn.setTarget_(self); btn.setAction_("knewIt:")
         self.btn = btn; view.addSubview_(btn)
 
@@ -489,12 +521,29 @@ rm -rf "{tmp}"
         self._hidden = False
         self.status = NSStatusBar.systemStatusBar().statusItemWithLength_(NSVariableStatusItemLength)
         self.status.button().setTitle_("語")
-        self.status.button().setToolTip_("ukabu-n1 单词便签")
+        self.status.button().setToolTip_(self._t("tooltip"))
         self.status.setMenu_(self._menu())
         _ic = self._app_icon()                 # 统一弹框/系统 UI 图标（源码版默认是 Python 图标）
         if _ic: NSApp.setApplicationIconImage_(_ic)
 
+        self._suspended = False                 # 锁屏/息屏挂起标志
+        dnc = NSDistributedNotificationCenter.defaultCenter()
+        dnc.addObserver_selector_name_object_(self, b"suspend:", "com.apple.screenIsLocked", None)
+        dnc.addObserver_selector_name_object_(self, b"resume:", "com.apple.screenIsUnlocked", None)
+        wnc = NSWorkspace.sharedWorkspace().notificationCenter()
+        wnc.addObserver_selector_name_object_(self, b"suspend:", "NSWorkspaceScreensDidSleepNotification", None)
+        wnc.addObserver_selector_name_object_(self, b"resume:", "NSWorkspaceScreensDidWakeNotification", None)
+
         self.render(); self.startTimer(); self._check_update()
+
+    @objc.python_method
+    def _lang(self):
+        return self.conf.get("lang") if self.conf.get("lang") in ("zh", "en") else "zh"
+
+    @objc.python_method
+    def _t(self, key, **kw):
+        s = STR.get(self._lang(), STR["zh"]).get(key) or STR["zh"].get(key, key)
+        return s.format(**kw) if kw else s
 
     @objc.python_method
     def _seg(self, t, size, color, bold=False):
@@ -519,11 +568,11 @@ rm -rf "{tmp}"
         # 非常规状态：离线 / 全部已掌握 —— 只用 tf_top 顶部一块（回看模式下不触发）
         msg = None; e = None
         if not self.words:
-            msg = self._seg("⚠️ 词库下载失败\n", 20, white, True), self._seg("请联网后右键 → 更新词库 重试", 13, foot)
+            msg = self._seg(self._t("offline_t") + "\n", 20, white, True), self._seg(self._t("offline_i"), 13, foot)
         elif not reviewing:
             e = self.roller.current()
             if e is None:
-                msg = self._seg("🎉 这批都标记会了！\n", 22, white, True), self._seg("右键可重置进度", 13, foot)
+                msg = self._seg(self._t("done_t") + "\n", 22, white, True), self._seg(self._t("done_i"), 13, foot)
         if msg:
             self.btn.setHidden_(True); self.ruby.setHidden_(True); self.tf_bot.setHidden_(True)
             self.play_word.setHidden_(True); self.play_ex.setHidden_(True)
@@ -544,13 +593,15 @@ rm -rf "{tmp}"
             self.btn.setHidden_(True)              # 回看纯展示，不让标「会了」
         else:
             w = self.words[e["idx"]]
-            self.btn.setHidden_(False)
+            self.btn.setHidden_(False); self.btn.setTitle_(self._t("knewit"))
         top = NSMutableAttributedString.alloc().init()
         top.appendAttributedString_(self._seg(w["word"] + "\n", 30, white, True))
         rd = f"{w.get('reading','')}    {w.get('pos','')}".strip()
         top.appendAttributedString_(self._seg(rd + "\n", 15, blue))
         top.appendAttributedString_(self._seg("\n", 5, foot))
-        top.appendAttributedString_(self._seg(w.get("meaning", ""), 16, light))
+        en = self._lang() == "en"
+        meaning = (w.get("meaning_en") or w.get("meaning", "")) if en else w.get("meaning", "")
+        top.appendAttributedString_(self._seg(meaning, 16, light))
         h_top = self._tf_h(self.tf_top, top)
 
         # 音频文件名(供 ▶ 按钮)
@@ -569,15 +620,15 @@ rm -rf "{tmp}"
 
         bot = NSMutableAttributedString.alloc().init()
         exc = w.get("example_cn", "")
-        if has_ex and exc:
+        if has_ex and exc and not en:            # 英文模式无例句翻译，只显示日文例句
             bot.appendAttributedString_(self._seg("　　" + exc + "\n", 12, excn))
         bot.appendAttributedString_(self._seg("\n", 4, foot))
         lv = w.get("level", "N1"); freq = w.get("freq", "")
-        tag = f"{lv} · {freq}" if freq else lv
+        tag = f"{lv} · {self._t(freq)}" if freq else lv
         if reviewing:
-            info = "（回看 · 点「下一个」继续）"
+            info = self._t("review")
         else:
-            info = f"本词第 {e['seen']+1}/{self.roller.graduate} 遍    ·    已掌握 {len(self.roller.known)}"
+            info = self._t("stats", seen=e['seen']+1, grad=self.roller.graduate, known=len(self.roller.known))
         bot.appendAttributedString_(self._seg(f"{tag}    ·    {info}", 11, foot))
         h_bot = self._tf_h(self.tf_bot, bot); self.tf_bot.setHidden_(False)
 
@@ -610,9 +661,15 @@ rm -rf "{tmp}"
 
     def startTimer(self):
         if getattr(self, "timer", None): self.timer.invalidate()
-        if not self.paused:
+        if not self.paused and not getattr(self, "_suspended", False):
             self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                 self.interval, self, b"tick:", None, True)
+
+    def suspend_(self, n):        # 锁屏 / 息屏：停轮播，免得没人看时刷虚进度
+        self._suspended = True
+        if getattr(self, "timer", None): self.timer.invalidate(); self.timer = None
+    def resume_(self, n):         # 解锁 / 唤醒：恢复（除非用户手动暂停着）
+        self._suspended = False; self.startTimer()
 
     @objc.python_method
     def _reset_history(self):
@@ -648,6 +705,11 @@ rm -rf "{tmp}"
         if e is not None: self.roller.mark_known(e["idx"])
         self._push_live(); self.render(); self.startTimer()
     def togglePause_(self, s): self.paused = not self.paused; self.startTimer()
+    def toggleLang_(self, s):                    # 整个界面中英切换
+        self.conf["lang"] = "zh" if self._lang() == "en" else "en"
+        jsave(CONF, self.conf)
+        self.render()                            # 先刷内容(释义)，再更新菜单标签
+        self.status.setMenu_(self._menu())
     def clearer_(self, s): self._set_opacity(min(0.92, self.conf.get("opacity", 0.6) + 0.1))
     def moreTransparent_(self, s): self._set_opacity(max(0.15, self.conf.get("opacity", 0.6) - 0.1))
     @objc.python_method
@@ -674,17 +736,18 @@ rm -rf "{tmp}"
         up = getattr(self, "_update", None)
         if up:
             it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                f"🟢 更新到 v{up['version']}", b"doUpdate:", "")
+                self._t("m_update", v=up['version']), b"doUpdate:", "")
             it.setTarget_(self); m.addItem_(it); m.addItem_(NSMenuItem.separatorItem())
-        toggle = "显示便签" if getattr(self, "_hidden", False) else "隐藏便签"
+        toggle = self._t("m_show") if getattr(self, "_hidden", False) else self._t("m_hide")
         for title, sel in [(toggle, b"toggleHidden:"), (None, None),
-                           ("✓ 会了(已掌握)", b"knewIt:"), ("⏸ 暂停 / ▶ 继续", b"togglePause:"),
-                           ("上一个", b"prevWord:"), ("下一个", b"nextWord:"), (None, None),
-                           ("快一点", b"faster:"), ("慢一点", b"slower:"), (None, None),
-                           ("更清晰", b"clearer:"), ("更透明", b"moreTransparent:"), (None, None),
-                           ("更新词库", b"refreshWords:"), ("重置进度", b"resetProgress:"), (None, None),
-                           ("检查更新", b"checkUpdate:"), (None, None),
-                           ("退出", b"quitApp:")]:
+                           (self._t("m_knewit"), b"knewIt:"), (self._t("m_pause"), b"togglePause:"),
+                           (self._t("m_prev"), b"prevWord:"), (self._t("m_next"), b"nextWord:"), (None, None),
+                           (self._t("m_faster"), b"faster:"), (self._t("m_slower"), b"slower:"), (None, None),
+                           (self._t("m_clearer"), b"clearer:"), (self._t("m_dimmer"), b"moreTransparent:"),
+                           (self._t("m_lang"), b"toggleLang:"), (None, None),
+                           (self._t("m_refresh"), b"refreshWords:"), (self._t("m_reset"), b"resetProgress:"), (None, None),
+                           (self._t("m_check"), b"checkUpdate:"), (None, None),
+                           (self._t("quit"), b"quitApp:")]:
             if title is None: m.addItem_(NSMenuItem.separatorItem()); continue
             it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, sel, "")
             it.setTarget_(self); m.addItem_(it)
