@@ -76,6 +76,7 @@ bash scripts/release.sh        # 产物 dist/ukabu-n1.app + dist/ukabu-n1.dmg
 ## 🙏 致谢 / 数据来源
 
 - 词库数据来自开源 Anki 卡组 **egg rolls JLPT10k**（[5mdld/anki-jlpt-decks](https://github.com/5mdld/anki-jlpt-decks)），以 **CC BY-NC 4.0** 授权，版权归原作者。本 app **不内置词库**：首次启动 / 「更新词库」时从上游源即时获取并存到 `~/Library/Application Support/ukabu-n1/`——这样原作者更新后你重启即得最新版。请勿将本数据用于商业用途。
+- 英文释义来自 **JMdict**（[EDRDG](https://www.edrdg.org/)，**CC BY-SA 4.0**）——开发时预生成 `glosses_en.json`（仅本词库范围），app 首启 / 「更新词库」时按「词+读音」贴上。菜单「🌐 语言 / Language」可切中文/英文释义（约 92% 词条有英文，缺则回退中文；英文模式不显示例句翻译）。
 - 图标为 AI 生成的原创素材。
 
 ## 📄 License
